@@ -82,7 +82,8 @@ require.config({
         
         'jspdf.plugin.canvas' : {
             deps:[
-	            'jspdf'
+	            'jspdf',
+	            'jspdf.plugin.context2d'
             ]
         },
         
@@ -97,6 +98,15 @@ require.config({
             'jspdf.plugin.annotations',
             
             'libs/html2canvas/dist/html2canvas'
+            ]
+        },
+        
+        'jspdf.plugin.addhtml' : {
+        	deps:[
+            'jspdf',
+            'jspdf.plugin.standard_fonts_metrics',
+            'jspdf.plugin.split_text_to_size',       
+            'jspdf.plugin.png_support'
             ]
         },
             

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+<title>Long Table</title>
+</head>
+
+<script src='../../libs/require/require.js'></script>
+<script>
+require_baseUrl_override = '../../';
+require(['../../libs/require/config'], function(){
+require(['jspdf.plugin.canvas', 'libs/html2pdf', 'libs/html2canvas/dist/html2canvas', 'libs/saveas'], function(){
+
+var pdf = new jsPDF('p', 'pt', 'a3');
+
+// Enable auto page wrap (there are still margin-top issues...)
+pdf.context2d.pageWrapY = pdf.internal.pageSize.height-20;
+
+// create a long table
+var table = document.createElement('table');
+for (var i=1; i<1000; i++){
+    var tr=document.createElement('tr');
+    var td=document.createElement('td');
+    td.innerHTML = "Item " + i;
+    tr.appendChild(td);
+    table.appendChild(tr);
+}
+document.body.appendChild(table);
+
+// render body to pdf
+html2pdf(document.body, pdf, function(){
+    pdf.save('Test.pdf');
+    
+});
+
+}); // require
+}); // require
+</script>
+
+<body>
+</body>
+</html>

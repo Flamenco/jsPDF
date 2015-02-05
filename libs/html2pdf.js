@@ -12,6 +12,10 @@ html2pdf = function(html,pdf,callback) {
 		alert('jsPDF canvas plugin not installed');
 		return;
 	}
+	if (!pdf.context2d) {
+		alert('jsPDF context2d plugin not installed');
+		return;
+	}
 	canvas.pdf = pdf;
 	pdf.annotations = {
 
