@@ -57,7 +57,7 @@
  */
 var jsPDF = (function (global) {
     'use strict';
-    var pdfVersion = '1.3',
+    var pdfVersion = '1.4',
         pageFormats = { // Size in pt of various paper formats
             'a0': [2383.94, 3370.39], 'a1': [1683.78, 2383.94],
             'a2': [1190.55, 1683.78], 'a3': [841.89, 1190.55],
@@ -180,7 +180,13 @@ var jsPDF = (function (global) {
             tmp,
             page = 0,
             currentPage,
+            pagesExtraPre = [], // an array of functions called before each page
+            newObject2List = [],
+            blendModeMap = [], // blendModeName [UPPERCASE] -> objID for GS object
+            gsMap = {}, // graphicsStateName -> objID for GS object
+            patternMap = {}, // patternName -> objID for Pattern object
             pages = [],
+            outIntercept = undefined,
             pagesContext = [], // same index as pages and pagedim
             pagedim = [],
             content = [],
@@ -217,8 +223,18 @@ var jsPDF = (function (global) {
             },
             out = function (string) {
                 if (outToPages) {
+                    // Mask and Group support
+                    // The c2d plugin can intercept PDF calls instead of sending instructions to content or page
+                    if (outIntercept) {
+                        if (outIntercept.type === 'group') {
+                            outIntercept.stream.push(string);
+                        } else {
+                            outIntercept.push(string);
+                        }
+                    } else {
                     /* set by beginPage */
                     pages[currentPage].push(string);
+                    }
                 } else {
                     // +1 for '\n' that will be used to join 'content'
                     content_length += string.length + 1;
@@ -254,6 +270,38 @@ var jsPDF = (function (global) {
             newObjectDeferredBegin = function (oid) {
                 offsets[oid] = content_length;
             },
+            /**
+             * Returns a PDF object containing the object number and a array of lines.
+             *
+             * The returned object also has a convenience method to push lines.
+             * @returns {{objId: number, lines: *[]}}
+             */
+            newObject2 = function () {
+                var objId = ++objectNumber;
+                var obj = {
+                    objId: objId,
+                    lines: [],
+                    isStream: false,
+                    push: function (line) {
+                        this.lines.push(line);
+                    }
+                };
+                this.addNewObject(obj);
+                return obj;
+            },
+            newStreamObject = function () {
+                var obj = this.newObject2();
+                obj.isStream = true;
+                return obj;
+            },
+            addGraphicsState = function (name, objId) {
+                gsMap[name] = objId;
+            },
+            addPattern = function (objId) {
+                var name = 'PATTERN' + objId;
+                patternMap[name] = objId;
+                return name;
+            },
             putStream = function (str) {
                 out('stream');
                 out(str);
@@ -277,9 +325,9 @@ var jsPDF = (function (global) {
                     out('/Parent 1 0 R');
                     out('/Resources 2 0 R');
                     out('/MediaBox [0 0 ' + f2(wPt) + ' ' + f2(hPt) + ']');
+                    out('/Contents ' + (objectNumber + 1) + ' 0 R');
                     // Added for annotation plugin
                     events.publish('putPage', {pageNumber: n, page: pages[n]});
-                    out('/Contents ' + (objectNumber + 1) + ' 0 R');
                     out('>>');
                     out('endobj');
 
@@ -312,14 +360,20 @@ var jsPDF = (function (global) {
                 out('1 0 obj');
                 out('<</Type /Pages');
                 var kids = '/Kids [';
-                for (i = 0; i < page; i++) {
-                    kids += pageObjectNumbers[i] + ' 0 R ';
-                }
+                pageObjectNumbers.forEach(function (id) {
+                    kids += id + ' 0 R ';
+                });
                 out(kids + ']');
                 out('/Count ' + page);
                 out('>>');
                 out('endobj');
                 events.publish('postPutPages');
+                // Added for transparency support
+                if (pagesExtraPre[n]) {
+                    for (var nn = 0; nn < pagesExtraPre[n].length; nn++) {
+                        pagesExtraPre[n][nn]();
+                    }
+                }
             },
             putFont = function (font) {
                 font.objectNumber = newObject();
@@ -340,6 +394,11 @@ var jsPDF = (function (global) {
             putXobjectDict = function () {
                 // Loop through images, or other data objects
                 events.publish('putXobjectDict');
+                if (API.groups) {
+                    for (var key in API.groups) {
+                        out('/' + API.groups[key].name + ' ' + API.groups[key].objId + ' 0 R ');
+                    }
+                }
             },
             putResourceDictionary = function () {
                 out('/ProcSet [/PDF /Text /ImageB /ImageC /ImageI]');
@@ -352,9 +411,26 @@ var jsPDF = (function (global) {
                     }
                 }
                 out('>>');
+                putGraphicStateDictionaries();
                 out('/XObject <<');
                 putXobjectDict();
                 out('>>');
+            },
+            putGraphicStateDictionaries = function () {
+                var t = '/ExtGState <<';
+                for (var key in gsMap) {
+                    t += '/' + key + ' ' + gsMap[key] + ' 0 R ';
+                }
+                t += '>>';
+                out(t);
+
+                var t = '/Pattern <<';
+
+                for (var key in patternMap) {
+                    t += '/' + key + ' ' + patternMap[key] + ' 0 R ';
+                }
+                t += '>>';
+                out(t);
             },
             putResources = function () {
                 putFonts();
@@ -711,6 +787,8 @@ var jsPDF = (function (global) {
                 out('/Size ' + (objectNumber + 1));
                 out('/Root ' + objectNumber + ' 0 R');
                 out('/Info ' + (objectNumber - 1) + ' 0 R');
+                //TODO generate unique id
+                //out ('/ID [ < 81b14aafa313db63dbd6f981e49f94f4 > < 81b14aafa313db63dbd6f981e49f94f4 >]');
             },
             beginPage = function (width, height) {
                 // Dimensions are stored as user units and converted to points on output
@@ -845,7 +923,8 @@ var jsPDF = (function (global) {
             buildDocument = function () {
                 outToPages = false; // switches out() to content
 
-                objectNumber = 2;
+                // Transparency was not working when this was set
+                //objectNumber = 2;
                 content = [];
                 offsets = [];
                 additionalObjects = [];
@@ -854,6 +933,35 @@ var jsPDF = (function (global) {
 
                 // putHeader()
                 out('%PDF-' + pdfVersion);
+                // binary flag
+                // out('%%\uF00D\uF00D\uF00D\uF00D');
+
+                // add objects that were created using the newObject2 function
+                newObject2List.forEach(function (newObject2) {
+                    offsets[newObject2.objId] = content_length;
+                    out(newObject2.objId + " 0 obj");
+                    if (newObject2.isStream) {
+                        var joined = newObject2.lines.join('\n');
+                        out('<< /Length ' + joined.length + '>>');
+                        putStream(joined);
+                    } else {
+                        if (newObject2.type === 'group') {
+                            //TODO This is a bit of a hack to add the length and bbox to the group object dictionary.
+                            // We should really use an object
+                            var joined = newObject2.stream.join('\n');
+                            newObject2.lines[0] = newObject2.lines[0].substring(0, newObject2.lines[0].length - 2) + '/Length ' + joined.length +
+                                ">>";
+                        }
+                        newObject2.lines.forEach(function (line) {
+                            out(line);
+                        });
+                    }
+                    if (newObject2.type === 'group') {
+                        var joined = newObject2.stream.join('\n');
+                        putStream(joined);
+                    }
+                    out('endobj');
+                });
 
                 putPages();
 
@@ -1059,6 +1167,16 @@ var jsPDF = (function (global) {
             'newAdditionalObject': newAdditionalObject,
             'newObjectDeferred': newObjectDeferred,
             'newObjectDeferredBegin': newObjectDeferredBegin,
+            'addNewObject': function (obj) {
+                return newObject2List.push(obj);
+            },
+            'newObject2': newObject2,
+            'newObject2List': newObject2List,
+            'newStreamObject': newStreamObject,
+            'blendModeMap': blendModeMap,
+            'addGraphicsState': addGraphicsState,
+            "outIntercept": outIntercept,
+            'addPattern': addPattern,
             'putStream': putStream,
             'events': events,
             // ratio that you use in multiplication of a given "size" number to arrive to 'point'
@@ -1087,7 +1205,13 @@ var jsPDF = (function (global) {
             'f2': f2,
             'getPageInfo': function (pageNumberOneBased) {
                 var objId = (pageNumberOneBased - 1) * 2 + 3;
-                return {objId: objId, pageNumber: pageNumberOneBased, pageContext: pagesContext[pageNumberOneBased]};
+                return {
+                    objId: objId,
+                    pageNumber: pageNumberOneBased,
+                    pageContext: pagesContext[pageNumberOneBased],
+                    pagedim: pagedim[pageNumberOneBased],
+                    scaleFactor: k
+                };
             },
             'getCurrentPageInfo': function () {
                 var objId = (currentPage - 1) * 2 + 3;
@@ -1375,8 +1499,27 @@ var jsPDF = (function (global) {
         API.clip = function () {
             // By patrick-roberts, github.com/MrRio/jsPDF/issues/328
             // Call .clip() after calling .rect() with a style argument of null
-            out('W') // clip
-            out('S') // stroke path; necessary for clip to work
+            out('W'); // clip
+            out('S'); // stroke path; necessary for clip to work
+        };
+
+        /**
+         * This fixes the previous function clip(). Perhaps the 'stroke path' hack was due to the missing 'n' instruction?
+         * We introduce the fixed version so as to not break API.
+         * @param fillRule
+         */
+        API.clip_fixed = function (fillRule) {
+            // Call .clip() after calling drawing ops with a style argument of null
+            // W is the PDF clipping op
+            if ('evenodd' === fillRule) {
+                out('W*');
+            } else {
+                out('W');
+            }
+            // End the path object without filling or stroking it.
+            // This operator is a path-painting no-op, used primarily for the side effect of changing the current clipping path
+            // (see Section 4.4.3, “Clipping Path Operators”)
+            out('n');
         };
 
         /**
